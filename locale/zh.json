@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Worktree 并行开发",
+    "description": "在 Web/Desktop 中创建、预览、合并和清理并行 Git worktree 任务。"
+  }
+}

@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# packed artifacts
+*.tgz
+
+# logs
+*.log
+npm-debug.log*
+
+# local environment
+.env
+.env.*
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# coverage
+coverage/
+
+# worktrees created when developing this plugin with itself
+.agents/worktrees/

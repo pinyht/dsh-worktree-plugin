@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Worktrees">
+  <g fill="none" stroke="#4C8DF6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="6" cy="5" r="2.2"/>
+    <circle cx="6" cy="19" r="2.2"/>
+    <circle cx="18" cy="9" r="2.2"/>
+    <path d="M6 7.2v9.6"/>
+    <path d="M6 13.5c0-3.6 2.4-4.5 4.8-4.5h5"/>
+    <path d="M18 11.2v2.1c0 2.4-1.8 3.7-4 3.7h-2.4"/>
+  </g>
+</svg>
