@@ -15,7 +15,7 @@ DeepSeek Harness 的并行 Git worktree 任务工具，采用 **用户 skill + �
 - 所有 Git 逻辑集中到独立 CLI `scripts/worktree-task.mjs`，不再依赖 DSH Host 的 `ctx.commands` / `ctx.subprocess` / `ctx.sessionQuery`。
 - 任务状态默认仍在 `<repo>/.git/dsh-worktree/tasks.json`，新任务 worktree 默认仍在 `<repo>/.agents/worktrees`：这两处都在主会话 workspace 内，不会被 DSH 的 workspace-write 沙箱拦截。
 - 也支持 Claude/Codex 同款的 home 状态和 sibling worktree；设置 `WORKTREE_STATE` / `WORKTREE_ROOT=sibling` 即可，但需要更宽的沙箱权限。
-- 仍然可以通过 Plugins UI 安装：插件现在只负责把 skill 包安装到 `~/.dsh/skills/worktree-*`，并把 CLI/runtime 放到 `~/.dsh/dsh-worktree`；不再注册 client/command/runtime skill。
+- 仍然可以通过 Plugins UI 安装：插件把 skill 包安装到 `~/.dsh/skills/worktree-*`、CLI/runtime 放到 `~/.dsh/dsh-worktree`，并启动一个 Host 侧轮询器自动注册新任务 workspace；不注册 client/command/runtime skill。
 
 ### 从 0.1.x 升级
 
@@ -36,6 +36,7 @@ DeepSeek Harness 的并行 Git worktree 任务工具，采用 **用户 skill + �
 - SQL：拿取任务新增 `.sql` 文件，或提交、推送后同步回各任务。
 - 结束：清理 worktree、分支和状态；有未合并改动或未合并提交时停止，确认放弃后再用 `--force`。
 - 合并时自动带出任务会话记忆：你在任务会话里的要求 + 最后的助手总结。
+- 插件安装时自动把新任务 worktree 注册为 workspace（约 2 秒内出现在左侧；不自动打开会话）。
 - 12 个命令是 user-only skill：用户手动输入 `/worktree-*`，不注册模型工具，模型不能自行调用；`/worktree-commit` 是唯一的 model-invocable skill，只在用户明确说“开始提交/提交”时使用。
 
 ---
@@ -74,7 +75,7 @@ DeepSeek Harness 的并行 Git worktree 任务工具，采用 **用户 skill + �
 5. 重启一次 DSH（插件在启动时把 13 个 skill 写入 `~/.dsh/skills/worktree-*`，CLI 和 lib 写入 `~/.dsh/dsh-worktree/`）。
 6. 新开一个会话，输入 `/worktree-help` 验证。
 
-插件本身不注册 skill、command 或 client；它只负责安装自包含的 skill 包。这样即使之后卸载插件，skill 和 CLI 仍然可用。
+插件本身不注册 skill、command 或 client；它负责安装自包含的 skill 包，并用 Host 的 `workspaceRegistry` 自动注册任务 workspace。这样即使之后卸载插件，skill 和 CLI 仍然可用。
 
 > 为什么是这个布局：DSH 的 preset skill provider 只把一个 skill root 的**直接子目录**当成一个 skill bundle（读取 `<dir>/SKILL.md`），不会递归扫描嵌套 bundle。因此 13 个 skill 直接放在 `~/.dsh/skills/worktree-*`，CLI 和依赖放在 `~/.dsh/dsh-worktree/`。`~/.agents/skills` 里 Codex 的嵌套目录（`codex-cli-worktree/worktree-*`）DSH 不会识别，也就不会和 DSH 同名 skill 冲突。
 
@@ -123,7 +124,7 @@ node scripts/install.mjs --force   # 覆盖已有同名安装
   /path/to/repo.dsh-worktrees/task-<任务名>-<hash>
   ```
 
-- **任务会话**：skills 不会自动创建或打开 workspace。`/worktree-new` 成功后，在 DSH 左侧 **Add workspace** 添加任务目录，再打开会话开发。
+- **任务会话**：插件安装会自动把任务 worktree 注册为 workspace（不自动打开会话）；纯 skill 安装需要手动在 DSH 左侧 **Add workspace** 添加任务目录，再打开会话开发。
 - **不自动启动服务、不自动 commit**；验证和提交由你决定。
 
 ### 推荐流程
@@ -131,7 +132,7 @@ node scripts/install.mjs --force   # 覆盖已有同名安装
 假设任务叫 `修复登录跳转`：
 
 1. 在主项目会话输入 `/worktree-new 修复登录跳转`，记下输出的任务目录。
-2. 在 DSH 左侧 Add workspace 添加该目录，打开任务会话。
+2. 插件安装时任务 workspace 会自动出现在左侧；没有出现再手动 Add workspace 添加该目录，然后打开任务会话。
 3. 在任务会话里改代码、跑必要的短命令；不要启动长期服务，也不要 commit。
 4. 需要看效果时回主项目会话，输入 `/worktree-switch 修复登录跳转`，然后手动启动服务验证。
 5. 验证完输入 `/worktree-switch --clear`，或直接预览另一个任务。
@@ -252,6 +253,7 @@ dsh-worktree-plugin/
 ├─ lib/
 │  ├─ plugin.js                 # apply：把 skill 包写入 ~/.dsh/skills
 │  ├─ install-skills.js         # 共享安装逻辑
+│  ├─ workspace-sync.js         # Host 侧自动注册任务 workspace
 │  ├─ engine.js                 # worktree / state / switch / merge / sync / sql / end
 │  ├─ git.js                    # 本地 Git runner（不依赖 DSH subprocess）
 │  ├─ state.js                  # 默认 .git/dsh-worktree；可选 home 布局与迁移
@@ -288,6 +290,7 @@ npm test
 - `sessions.test.js`：DSH 会话记忆读取；
 - `state.test.js`：仓库内状态默认值与 home 状态迁移；
 - `plugin.test.js`：插件安装 skill 包；
+- `workspace-sync.test.js`：任务 workspace 自动注册；
 - `cli.test.js`：独立 CLI 端到端；
 - `cli-memory.test.js`：merge 后 `commit-context` 自动带出任务记忆并 `mark-committed`；
 - `install.test.js`：纯 skill 安装。
@@ -305,7 +308,7 @@ node scripts/install.mjs --force
 ## 已知限制
 
 - 每条命令都会经过一次模型回合；比 host command 慢，也会消耗 token。skill 要求 Agent 原样展示脚本输出，但最终呈现仍由模型完成。
-- 不自动创建/打开 workspace；需要手动 Add workspace。结束任务后也需要手动删除或归档该 workspace。
+- 插件安装会自动注册任务 workspace，但不会自动打开会话；纯 skill 安装需要手动 Add workspace。结束任务后需要手动删除或归档该 workspace。
 - 任务会话记忆依赖 DSH 会话文件格式，格式变化时会退化为“无记忆”，不影响 Git 操作。
 - `--force` 的安全性依赖 skill 指令和 Agent 遵守；不是宿主级硬约束。真正危险的操作前请自己确认。
 - 不启动/重启项目服务；验证需要你手动做。

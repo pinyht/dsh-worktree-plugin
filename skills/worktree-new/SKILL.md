@@ -17,5 +17,5 @@ disable-model-invocation: true
 - 不要启动任何项目服务。
 - 如果 CLI 因 DSH 文件沙箱拒绝写入主项目目录、worktree 或状态目录，按 DSH 的提权流程用同一命令重试（sandbox_permissions / justification），不要改用其他方式绕过。
 - 如果脚本提示主项目目录不干净、任务已存在、分支已存在或目录已存在，停止并把原因告诉用户。
-- 成功后把脚本输出的任务目录原样告诉用户，并提醒：在 DSH 左侧 Add workspace 添加该目录，打开任务会话继续开发。
+- 成功后把脚本输出的任务目录原样告诉用户，并提醒：插件安装时任务 workspace 通常会自动出现在 DSH 左侧；如果没有出现，再手动 Add workspace 添加该目录，然后打开任务会话继续开发。
 - 不要自行执行 git worktree、git branch 或复制文件来复刻脚本。

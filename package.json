@@ -33,6 +33,6 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node test/engine.test.js && node test/absorbed.test.js && node test/sessions.test.js && node test/state.test.js && node test/plugin.test.js && node test/cli.test.js && node test/cli-memory.test.js && node test/install.test.js"
+    "test": "node test/engine.test.js && node test/absorbed.test.js && node test/sessions.test.js && node test/state.test.js && node test/plugin.test.js && node test/workspace-sync.test.js && node test/cli.test.js && node test/cli-memory.test.js && node test/install.test.js"
   }
 }
