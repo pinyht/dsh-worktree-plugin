@@ -1,130 +1,148 @@
 # dsh-worktree
 
-DeepSeek Harness（Web / Desktop）的并行 Git worktree 任务插件。
+DeepSeek Harness 的并行 Git worktree 任务工具，采用 **用户 skill + 独立 CLI** 架构。
 
-它把「手动 `git worktree` → 手动加 workspace → 手动开 session → 手动复制改动预览 → 手动合并」收进一个 **Worktrees 面板 + 12 个用户命令**。主项目目录仍然是可重置的统一调试槽，任务在独立 worktree 里开发。
+主项目目录仍然是可重置的统一调试槽：任务在独立 worktree 里开发，需要看效果时把任务改动临时复制到主项目目录验证，验证通过再合并回主项目并手动 commit。整个流程不会为了调试而做 WIP 提交。
 
-> 当前版本 `0.1.0`，面向官方 Web 与 Desktop。TUI 不在支持范围内。插件以本地目录安装为主，尚未发布 npm。
+> 当前版本 `0.2.0`。这是不兼容升级：Worktrees 面板、client bundle 和 host commands 已移除，改为 12 个 user-only skill + 1 个 `/worktree-commit`（用于自然语言“开始提交”）。状态和 worktree 默认留在仓库内，避免 DSH 的 workspace-write 沙箱每次提权；也支持切到 Claude/Codex 同款的外部布局。
+
+---
+
+## 0.2.0 的变化
+
+- 删除 Worktrees 按钮、面板、`client.js` 和所有 client slot 注册。
+- 删除 12 个 host commands，改为 12 个 user-only `/worktree-*` skill，外加 1 个唯一 model-invocable 的 `/worktree-commit`（用于自然语言“开始提交”）。
+- 所有 Git 逻辑集中到独立 CLI `scripts/worktree-task.mjs`，不再依赖 DSH Host 的 `ctx.commands` / `ctx.subprocess` / `ctx.sessionQuery`。
+- 任务状态默认仍在 `<repo>/.git/dsh-worktree/tasks.json`，新任务 worktree 默认仍在 `<repo>/.agents/worktrees`：这两处都在主会话 workspace 内，不会被 DSH 的 workspace-write 沙箱拦截。
+- 也支持 Claude/Codex 同款的 home 状态和 sibling worktree；设置 `WORKTREE_STATE` / `WORKTREE_ROOT=sibling` 即可，但需要更宽的沙箱权限。
+- 仍然可以通过 Plugins UI 安装：插件现在只负责把 skill 包安装到 `~/.dsh/skills/worktree-*`，并把 CLI/runtime 放到 `~/.dsh/dsh-worktree`；不再注册 client/command/runtime skill。
+
+### 从 0.1.x 升级
+
+- 先在 Plugins 里卸载旧版 `dsh-worktree-plugin`，再安装 0.2.0；旧 client bundle 可能被 profile 缓存，重装后重启 DSH。
+- 旧任务状态默认仍从 `<repo>/.git/dsh-worktree/tasks.json` 读取；如果设置 `WORKTREE_STATE`，首次读取会导入到新位置。
+- 旧任务 worktree 仍在 `.agents/worktrees`，新任务默认也在那里；确认任务都结束后再手动清理。
+- 面板和 12 个 host command 已删除，改用 `/worktree-*` skill；输入 `/worktree-help` 查看新入口。
 
 ---
 
 ## 功能
 
-- 在输入框左下角工具行显示 **Worktrees** 按钮；点开后在上方展开任务面板（任务列表、主项目状态、预览状态）。按钮不单独占一行。
-- **新建任务** 创建 worktree，并自动注册 workspace、打开任务会话；不需要手动 Add workspace。
-- 任务行支持 **打开 / 预览 / 合并 / 同步主线 / SQL / 结束**；面板头部支持 **同步全部**。
-- 预览会把任务改动复制进主项目目录，不 commit，也不反向同步任务。
-- 合并把任务改动三方合并回主项目目录，不自动 commit；冲突时保留冲突状态并给出冲突文件分析。
-- 合并时自动带出任务会话记忆：你在任务会话里的要求 + 最后的助手总结。主项目会话因此同时拥有 why 和 what。
-- 主项目有新提交后，可同步到单个或全部任务。
-- 合并后可以把任务记忆一键填入输入框，让 Agent 基于 why + what 写提交说明。
-- 任务有新增 `.sql` 时，面板出现 **SQL** 按钮：可「拿到主项目」或「提交并推送」。
-- 命令结果在会话里直接展开显示；面板内部的 `--json` 读取只显示一行紧凑记录。
-- 支持把任务新增的 SQL 文件拿到主项目，或一键提交、推送并同步回任务。
-- 所有入口都是**用户命令 / 面板操作**，不注册模型工具；模型不能自行调用。
+- 创建独立 worktree 任务，任务分支和状态自动记录。
+- 预览：先把主项目目录恢复到当前提交，再复制任务改动，不 commit，不反向同步。
+- 合并：三方合并到主项目，不 commit；冲突时保留冲突状态，由 Agent 读取冲突文件、`:1/:2/:3` 三方版本和相关代码后给出语义级方案。
+- 已手动合并并提交的任务不会重复重放补丁：检测到改动已被主线包含时直接对齐任务目录。
+- 同步：把主项目最新提交带到单个或全部任务；已被主线吸收的任务自动对齐。
+- SQL：拿取任务新增 `.sql` 文件，或提交、推送后同步回各任务。
+- 结束：清理 worktree、分支和状态；有未合并改动或未合并提交时停止，确认放弃后再用 `--force`。
+- 合并时自动带出任务会话记忆：你在任务会话里的要求 + 最后的助手总结。
+- 12 个命令是 user-only skill：用户手动输入 `/worktree-*`，不注册模型工具，模型不能自行调用；`/worktree-commit` 是唯一的 model-invocable skill，只在用户明确说“开始提交/提交”时使用。
+
+---
+
+## 要求
+
+- DeepSeek Harness `>=0.2.1-rc.2 <0.3.0`。
+- Node.js `>=22`（CLI 使用 Node 内置 zstd 读取任务会话记忆）。
+- Git。
+- Linux 或 macOS；Windows 未实测。
 
 ---
 
 ## 安装
 
-### 安装到 Web profile（推荐）
+有两个安装方式，选一个即可。两个方式安装的是同一套 skill，不要同时用同一个目标目录。
+
+### 方式 A：通过 Plugins UI 安装（推荐）
 
 1. 打开 Web UI 侧边栏 **Plugins**。
 2. **Add plugin** 旁的箭头 → **Install a third-party plugin**。
-3. 填入安装源，三种都可以：
+3. 填入安装源：
 
    ```text
    # 本地目录
    /path/to/dsh-worktree-plugin
 
    # GitHub 仓库
-   github:<你的用户名>/dsh-worktree-plugin
+   github:pinyht/dsh-worktree-plugin
 
    # npm（发布后）
    dsh-worktree-plugin
    ```
 
 4. 勾选信任框 → **Install** → **Enable now**。
+5. 重启一次 DSH（插件在启动时把 13 个 skill 写入 `~/.dsh/skills/worktree-*`，CLI 和 lib 写入 `~/.dsh/dsh-worktree/`）。
+6. 新开一个会话，输入 `/worktree-help` 验证。
 
-也可以让 Agent 用 `plugin_manager` 的 `install_bundle`，target 传同样的 spec。
+插件本身不注册 skill、command 或 client；它只负责安装自包含的 skill 包。这样即使之后卸载插件，skill 和 CLI 仍然可用。
 
-安装后，项目会话的输入框工具行里会出现 **Worktrees** 按钮；没有出现时刷新一次页面。当前会话不是 Git 仓库时，按钮仍显示，点开会提示先打开项目主目录会话。
+> 为什么是这个布局：DSH 的 preset skill provider 只把一个 skill root 的**直接子目录**当成一个 skill bundle（读取 `<dir>/SKILL.md`），不会递归扫描嵌套 bundle。因此 13 个 skill 直接放在 `~/.dsh/skills/worktree-*`，CLI 和依赖放在 `~/.dsh/dsh-worktree/`。`~/.agents/skills` 里 Codex 的嵌套目录（`codex-cli-worktree/worktree-*`）DSH 不会识别，也就不会和 DSH 同名 skill 冲突。
 
-### 安装到 Desktop
+### 方式 B：纯 skill 安装（不用插件）
 
-Desktop 使用保留的 `desktop` profile，由 Desktop 载体管理，`dsh plugin --profile desktop` 会被 CLI 拒绝。
+```bash
+git clone https://github.com/pinyht/dsh-worktree-plugin.git
+cd dsh-worktree-plugin
+node scripts/install.mjs
+```
 
-- 在 Desktop 的 **Plugins** 页面安装同一个包；
-- 如果 Desktop 的 Host 访问不到本地路径，用 `npm pack` 生成 tarball，安装时填 tarball 的绝对路径；或发布到 npm 后按包名安装。
-- Desktop 的渲染尚未在本机实测。
+默认把 13 个 skill 装到 `~/.dsh/skills/worktree-*`，CLI/runtime 装到 `~/.dsh/dsh-worktree/`；也可以指定位置：
+
+```bash
+node scripts/install.mjs \
+  --skills-root ~/.dsh/skills \
+  --runtime-dir ~/.dsh/dsh-worktree
+node scripts/install.mjs --force   # 覆盖已有同名安装
+```
+
+安装脚本会复制 skill、CLI 和 CLI 依赖的 `lib/`，并把 skill 里的 `{{CLI}}` 替换成实际路径。安装后新开会话或刷新页面即可。
 
 ### 卸载
 
-- Plugins → 打开 `dsh-worktree-plugin` 详情页 → **Uninstall**；
-- 或 `dsh plugin --profile web remove dsh-worktree-plugin`。
+- **插件安装**：Plugins → `dsh-worktree-plugin` → **Uninstall**。
+- **纯 skill 安装**：删除 `~/.dsh/skills/worktree-*` 和 `~/.dsh/dsh-worktree/`。
 
-卸载只移除插件代码，**不会删除** worktree、任务分支或 `tasks.json`。先执行 `/worktree-end` 清理任务，或手动删除 `.agents/worktrees` 和 `.git/dsh-worktree`。
+两种方式都不会自动删除 worktree、任务分支或任务状态目录。先执行 `/worktree-end` 清理任务，再手动删除残留目录。
 
 ---
 
 ## 使用
 
-### 面板
+### 基本模型
 
-打开项目会话，输入框左下角的工具行里会出现一个 **Worktrees** 按钮，和 `+` / 工作区选择在同一行：
+- **主项目目录**：可重置的统一调试槽。`/worktree-new`、`/worktree-switch`、`/worktree-merge`、`/worktree-sync`、SQL 和 `/worktree-end` 都在这里执行。
+- **任务 worktree**：独立开发目录，默认在仓库内：
 
-```text
-[+] [工作区内修改] [🌿 Worktrees 3]          DeepSeek-V4.1-Flash  Max  [↑]
-```
+  ```text
+  <repo>/.agents/worktrees/task-<任务名>-<hash>
+  ```
 
-按钮不单独占一行。点开后，面板在输入框上方展开（会把输入框往下推，不遮挡对话），宽度与输入框一致；点「收起」关闭：
+  需要和 Claude/Codex 一样的 sibling 目录时，设置 `WORKTREE_ROOT=sibling`，任务会放到：
 
-```text
-┌ Worktrees ─────────────────────────────────────────────┐
-│ [任务名，例如 修复登录跳转] [新建任务]                  │
-│ 新建任务会创建 worktree，并自动打开任务会话。           │
-│                                                          │
-│ 修复登录跳转  有未合并改动  .../task-修复登录跳转-1a2b  │
-│        [打开] [预览] [合并] [同步主线] [SQL 2] [结束]        │
-│ 支付回调重试  干净          .../task-支付回调重试-3c4d  │
-│        [打开] [预览] [合并] [同步主线] [结束]                │
-└──────────────────────────────────────────────────────────┘
-```
+  ```text
+  /path/to/repo.dsh-worktrees/task-<任务名>-<hash>
+  ```
 
-- **新建任务**：创建 worktree → 自动创建并打开任务会话（任务目录成为独立 workspace）。
-- **打开**：打开该任务对应的 workspace/session；没有注册时自动注册。
-- **预览**：把任务改动复制到主项目目录，主项目栏显示「正在预览」。
-- **合并**：三方合并到主项目目录，不 commit；无冲突的改动自动写入。真正冲突时停止并保留冲突状态，不会替你选边；同时自动把冲突上下文交给当前 Agent（`agent.followup`），Agent 读取冲突文件、`:1/:2/:3` 三方版本和相关代码后给出 2-3 个语义方案，你选择后再修改。
-- **同步主线**：把主项目最新提交 ff-only 带入该任务。
-- **同步全部**：面板头部按钮，等价于 `/worktree-sync --all`。
-- **SQL**：任务有新增 `.sql` 时出现。点开后列出新增 SQL，可「拿到主项目」（不 commit）或「提交并推送」（commit + push + 同步到各任务）；推送前会在面板内弹出确认条。一次处理该任务当前所有新增 SQL；路径含空格时请用命令。
-- **收起**：把面板收回成工具行里的 Worktrees 按钮。
-- **结束**：在面板内弹出确认条（不再用浏览器原生 confirm），确认后清理 worktree、分支、状态，并自动删除对应的空 workspace；有未合并改动会拦住。
-- **填入提交说明请求**：合并成功后出现；把任务会话记忆和本次合并内容填入输入框，你确认后发送给 Agent。
+- **任务会话**：skills 不会自动创建或打开 workspace。`/worktree-new` 成功后，在 DSH 左侧 **Add workspace** 添加任务目录，再打开会话开发。
+- **不自动启动服务、不自动 commit**；验证和提交由你决定。
 
-### 和主项目的关联
+### 推荐流程
 
-- 任务 workspace 的标题会写成 `主项目 · 任务名`，例如 `my-project · 修复登录跳转`；
-- 面板标题显示 `Worktrees · my-project`，工具行按钮的 tooltip 也带仓库名；
-- 任务会话在左侧栏会有分支小图标（会话空闲时显示；运行中会被状态点占用）；
-- 左侧栏切到 **View options → Group by → Workspace Tree** 后，任务 workspace 会因为路径在 `<repo>/.agents/worktrees/` 下而嵌套在主项目 workspace 下；这个视图选择是浏览器本地设置，一次切换后保留；
-- 任务会话里打开 Worktrees，会显示「当前在任务会话」并提供 **主项目** 按钮；
-- 已有任务在展开面板或点「打开」时，如果标题仍是默认的任务名/目录名/旧的 `主项目 / 任务名` 格式，会自动整理成 `主项目 · 任务名`；你手动改过的标题不会被覆盖；
-- 如果主项目本身没有注册为 workspace，前缀会回退为主项目目录名。
+假设任务叫 `修复登录跳转`：
 
-### 合并冲突
-
-- 非冲突改动由 `git apply --3way` 自动合入；
-- 真正冲突时脚本停止，主项目目录保留冲突状态，任务目录不动；
-- 命令会自动把冲突上下文通过 `agent.followup` 交给当前 Agent；
-- Agent 会读取 `git status`、冲突文件、`:1/:2/:3` 三方版本，以及相关路由、权限、schema、配置、状态机代码；
-- Agent 应给出 2-3 个语义级方案并说明影响，等你选择后再修改；插件不会自动 commit，也不会替你选方案；
-- 面板会自动收起、焦点回到输入框，你可以直接看到 Agent 的分析；
-- 如果自动提交冲突上下文失败，面板会保留「让 Agent 分析冲突」按钮作为兜底。
+1. 在主项目会话输入 `/worktree-new 修复登录跳转`，记下输出的任务目录。
+2. 在 DSH 左侧 Add workspace 添加该目录，打开任务会话。
+3. 在任务会话里改代码、跑必要的短命令；不要启动长期服务，也不要 commit。
+4. 需要看效果时回主项目会话，输入 `/worktree-switch 修复登录跳转`，然后手动启动服务验证。
+5. 验证完输入 `/worktree-switch --clear`，或直接预览另一个任务。
+6. 开发完成后输入 `/worktree-merge 修复登录跳转`；有冲突时按 Agent 提示处理。
+7. 在主项目目录重启服务验证；通过后直接说 **“开始提交”**（或输入 `/worktree-commit`），Agent 会自动读取任务会话记忆和主项目 diff，生成中文提交说明并 commit；不需要把记忆复制到输入框。
+8. 主项目有新提交后，输入 `/worktree-sync 修复登录跳转` 或 `/worktree-sync --all`。
+9. 任务完成后输入 `/worktree-end 修复登录跳转` 清理。
 
 ### 命令
 
-全部是用户命令（输入框 `/worktree-...`），不产生模型工具，也不会被模型自动调用。
+12 个命令是 user-only skill（`disable-model-invocation: true`），不会被模型自动调用；只有 `/worktree-commit` 是 model-invocable，因为需要响应“开始提交/提交”这类自然语言，但仍然只在用户明确要求提交时使用。
 
 | 命令 | 作用 |
 |---|---|
@@ -136,6 +154,7 @@ Desktop 使用保留的 `desktop` profile，由 Desktop 载体管理，`dsh plug
 | `/worktree-switch <任务名>` | 把任务改动复制到主项目目录预览 |
 | `/worktree-switch --clear` | 清除预览并恢复主项目 |
 | `/worktree-merge <任务名>` | 三方合并到主项目，不自动 commit |
+| `/worktree-commit [任务名]` | 基于最近合并的任务记忆和 diff 生成提交说明并 commit |
 | `/worktree-sync <任务名>` | 主项目最新提交带到任务 |
 | `/worktree-sync --all` | 同步所有任务 |
 | `/worktree-take-sql <任务名> <sql...>` | 拿取任务新增 SQL，不 commit |
@@ -143,174 +162,159 @@ Desktop 使用保留的 `desktop` profile，由 Desktop 载体管理，`dsh plug
 | `/worktree-end <任务名> [--force]` | 清理任务 |
 | `/worktree-help` | 帮助 |
 
-`list` / `new` / `info` / `current` / `status` 支持 `--json`，面板内部使用。
+### 提交：不需要复制任务记忆
 
-命令结果会在会话里以展开卡片显示完整文本（不再只有折叠行）；面板内部的 `--json` 读取显示为一行紧凑记录，避免把 JSON 铺到对话里。
+验证通过后，直接说：
 
-用户手动输入的命令执行完会自动把输入焦点放回输入框；面板按钮触发的命令带 `--panel`，不会抢走焦点。
-
-面板上的一次性动作（打开、预览、合并、同步、新建任务、SQL 操作、结束确认等）完成后面板会自动收起，并把焦点放回输入框；需要继续操作时再点 Worktrees。需要面板内继续交互的动作（SQL 展开、结束确认、SQL 推送确认）不会提前收起。
-
----
-
-## 推荐流程
-
-1. 在主项目会话展开 Worktrees，点 **新建任务**，输入任务名。
-2. 插件创建 worktree，并自动打开任务会话。
-3. 在任务会话里改代码、跑短命令；不要启动长期服务，也不要提交。
-4. 回主项目会话，点 **预览**；手动重启服务验证。
-5. 验证完点 **清除预览**，或继续预览另一个任务。
-6. 点 **合并**；有冲突时按提示让 Agent 读取冲突文件和 `:1/:2/:3` 三方版本后给出方案。
-7. 在主项目目录重启服务验证；通过后点 **填入提交说明请求**，确认并发送给 Agent，或自己 `git commit`。
-8. 主项目有新提交后，点任务行的 **同步主线**，或面板头部的 **同步全部**。
-9. 任务完成后点 **结束** 清理。
-
----
-
-## 数据位置
-
-| 内容 | 位置 |
-|---|---|
-| 任务状态 | `<repo>/.git/dsh-worktree/tasks.json` |
-| Worktree | 默认 `<repo>/.agents/worktrees/task-<任务名>-<hash>` |
-| 任务分支 | `worktree/<slug>-<hash>` |
-
-任务状态放在主项目 `.git` 内：不污染工作区，任务会话可读，主会话可写。
-
-Worktree 默认放在 `.agents/worktrees`，与 DSH 原生实验性 worktree 运行时一致，且位于主项目 workspace 内。
-
-### 修改 worktree 位置
-
-插件读取 **DSH Host 进程**的环境变量 `DSH_WORKTREE_ROOT`：
-
-```bash
-DSH_WORKTREE_ROOT=git dsh web       # <repo>/.git/dsh-worktrees
-DSH_WORKTREE_ROOT=sibling dsh web   # ../<repo>.worktrees
-DSH_WORKTREE_ROOT=/abs/path dsh web
+```text
+开始提交
 ```
 
-- `agents`（默认）：`<repo>/.agents/worktrees`，编辑器友好；但 `git clean -xfd` 会删掉。
-- `git`：`<repo>/.git/dsh-worktrees`，能躲过 `git clean -xfd`，但路径对编辑器不友好。
-- `sibling`：仓库外，需要主会话有更宽的文件权限；否则 Git 操作可能被 DSH 沙箱拒绝。
+或者输入 `/worktree-commit`。Agent 会：
 
-环境变量需要在启动 `dsh web` 时设置；修改后重启 Host。
+1. 调用 `commit-context`，自动选择最近一次 `/worktree-merge` 的任务；
+2. 读取该任务的 DSH 会话记忆（你的要求 + 最后总结），以及主项目 `git status` / `git diff`；
+3. 生成中文提交说明；
+4. 如果没有“本次合并之外的改动”，直接 `git add -A` + `git commit`，不 push；
+5. 提交成功后更新任务状态。
+
+如果发现主项目还有不属于本次合并的文件，skill 会先停下来问你，不会直接 `git add -A`。提交说明不依赖你手动复制任何内容。
+
+### 关于 `--force`
+
+`/worktree-end` 默认会拦住未合并改动、未解决冲突，以及任务分支上主线没有的提交。skill 会先说明风险，只有你明确确认放弃后才执行 `--force`。不要把 `--force` 当作 merge、review 或验证的替代。
 
 ---
 
-## 任务会话与 Git 的限制
+## 合并冲突
 
-任务会话的 workspace 是任务目录，而 linked worktree 的 index/HEAD 元数据在主项目 `.git` 内，位于任务 workspace 之外。因此：
-
-- 任务会话里编辑文件、`git diff`、读日志正常；
-- 任务会话里 `git add` / `commit` / `reset` / `stash` 可能被 DSH 沙箱拒绝；
-- 插件的 switch/merge/sync/take-sql/push-sql/end 会检查当前是否在主项目目录，在任务会话执行会报错。
-
-这是原流程本来的约束：任务目录只开发，主项目目录负责预览、合并、验证和提交。插件的命令在任务会话里仍可安全执行 `list/current/status/info`，面板会禁用主项目操作并提供「主项目」按钮。
-
-插件自身的 Git 操作通过 Host 的 `ctx.subprocess` 执行，属于**用户命令**，不注册模型工具；它不受任务会话沙箱限制，这是为了让主槽的 reset/merge/sync 可用。请只安装你信任的插件。
+- 非冲突改动由 `git apply --3way` 自动合入。
+- 真正冲突时 CLI 停止，主项目目录保留冲突状态，任务目录不动。
+- skill 要求 Agent 读取 `git status`、冲突文件、`:1/:2/:3` 三方版本，以及相关路由、权限、schema、配置、状态机代码，给出 2-3 个语义级方案，等你选择后再修改。
+- 插件/CLI 不会自动 commit，也不会替你选方案。
+- 你在主项目里解决冲突并提交后，可以再次执行 `/worktree-merge`：CLI 会识别任务改动已经被主线包含，直接把任务目录对齐到主线，不会重复应用补丁或再次制造冲突。
 
 ---
 
 ## 任务会话记忆
 
-合并时，插件通过 `ctx.sessionQuery` 按任务目录找到会话，读取：
+合并时，CLI 读取 `~/.dsh/sessions` 下按任务目录匹配的 DSH 会话：
 
 - `user/message` 且 `source.kind === "user"` / `"agent-message"` 的用户原话；
 - 最后一条 `assistant/message` 的 text block。
 
 只读这两类内容，不读工具输出。一个完整任务约 2KB。找不到会话时降级为「未找到任务会话记忆」，只依据 diff 生成提交说明。
 
+这是对 DSH 会话文件格式的只读适配；格式变化时最多退化为没有记忆，不会阻塞 worktree 操作。
+
 ---
 
-## 目录结构
+## 数据位置
+
+| 内容 | 默认位置 | 可选位置 |
+|---|---|---|
+| 任务状态 | `<repo>/.git/dsh-worktree/tasks.json` | `WORKTREE_STATE` 指向的目录（home 布局） |
+| Worktree | `<repo>/.agents/worktrees/task-<任务名>-<hash>` | `WORKTREE_ROOT` 选择 |
+| 任务分支 | `worktree/<slug>-<hash>` | — |
+| Skills | `~/.dsh/skills/worktree-*/SKILL.md` | `scripts/install.mjs --skills-root` 可改 |
+| CLI/runtime | `~/.dsh/dsh-worktree/` | `scripts/install.mjs --runtime-dir` 可改 |
+
+默认状态和 worktree 都在主会话 workspace 内，DSH 的 workspace-write 沙箱可以直接读写，不需要每次提权。
+
+如果设置 `WORKTREE_STATE` 切到 home 状态，首次读取时会从 `<repo>/.git/dsh-worktree/tasks.json` 导入一次旧状态。旧任务仍按状态里的绝对路径工作，不会自动搬目录。
+
+### 修改 worktree 位置
+
+CLI 读取 `WORKTREE_ROOT`（兼容旧的 `DSH_WORKTREE_ROOT`）：
+
+```bash
+WORKTREE_ROOT=agents dsh web    # 默认：<repo>/.agents/worktrees
+WORKTREE_ROOT=sibling dsh web   # ../<repo>.dsh-worktrees（Claude/Codex 同款）
+WORKTREE_ROOT=git dsh web       # <repo>/.git/dsh-worktrees
+WORKTREE_ROOT=/abs/path dsh web
+```
+
+- `agents`（默认）：在仓库内，沙箱友好；`git clean -xfd` 会删掉。
+- `sibling`：仓库外，和 Claude/Codex 一致；需要更宽的文件权限或 DSH 提权。
+- `git`：在 `.git` 内，能躲过 `git clean -xfd`，但路径对编辑器不友好。
+
+任务状态位置可用 `WORKTREE_STATE` 覆盖为 home 布局（默认不启用）。
+
+> DSH 会把 `DSH_*` 环境变量从 agent 子进程里剥离，所以 skill 模式下请用 `WORKTREE_ROOT` / `WORKTREE_STATE` / `WORKTREE_DSH_HOME`，而不是 `DSH_WORKTREE_ROOT` / `DSH_WORKTREE_STATE`。旧的 `DSH_*` 名称仍作为兼容回退保留。
+
+---
+
+## 架构
 
 ```text
 dsh-worktree-plugin/
-├─ index.js                 # Host 入口
-├─ client.js                # Web/Desktop dock（纯 JS + React.createElement）
-├─ cordis.patch.yml         # bundle 插入 Host 行
-├─ package.json             # dsh.bundle.patch + dsh.client
+├─ index.js                     # Cordis 入口：安装 skill 包
 ├─ lib/
-│  ├─ plugin.js             # apply / inject
-│  ├─ commands.js           # 12 个用户命令
-│  ├─ engine.js             # 状态、worktree、switch/merge/sync/sql/end、记忆
-│  ├─ git.js                # ctx.subprocess / 本地测试 runner
-│  ├─ state.js              # tasks.json 与 repo context
+│  ├─ plugin.js                 # apply：把 skill 包写入 ~/.dsh/skills
+│  ├─ install-skills.js         # 共享安装逻辑
+│  ├─ engine.js                 # worktree / state / switch / merge / sync / sql / end
+│  ├─ git.js                    # 本地 Git runner（不依赖 DSH subprocess）
+│  ├─ state.js                  # 默认 .git/dsh-worktree；可选 home 布局与迁移
+│  ├─ dsh-sessions.js           # 只读 DSH 会话记忆
 │  └─ errors.js
-├─ locale/{en,zh}.json
-├─ icon.svg
+├─ skills/worktree-*/SKILL.md   # 12 个 user-only + 1 个 commit skill
+├─ scripts/
+│  ├─ worktree-task.mjs         # 独立 CLI
+│  └─ install.mjs               # 纯 skill 安装
+├─ cordis.patch.yml             # bundle 插入 Host 行
 └─ test/
-   ├─ engine.test.js        # 引擎全流程（本地 Git）
-   ├─ host.test.js          # 命令注册 + Host runner
-   └─ client-smoke.test.js  # Client 组件基本渲染
 ```
 
-没有构建步骤：Host 与 Client 都是普通 ESM/浏览器 JS，本地目录安装即可加载。
+关键点：
+
+- **Git 逻辑只在一处**：`lib/engine.js`，由 CLI 调用。
+- **skill 只写执行纪律**：调用 CLI、展示输出、在边界处询问用户。
+- **插件只做安装**：把 13 个 skill 复制到 `~/.dsh/skills`、CLI/lib 复制到 `~/.dsh/dsh-worktree`；不注册 client、command 或 runtime skill。
+- **CLI 自包含**：安装时复制 `lib/` 和 `scripts/`，即使插件后来被卸载，skill 仍可运行。
 
 ---
 
-## 开发与迭代
+## 开发与测试
 
 ```bash
 cd /path/to/dsh-worktree-plugin
 npm test
 ```
 
-修改后：
+测试覆盖：
 
-- Host 部分：HMR 可能直接生效；没有生效时在 Plugins 里关掉再打开 bundle，或重启 `dsh web`。
-- Client 部分：重新加载页面；如果模块图没有更新，关掉再打开 bundle。
-- 替换已安装包后，可能需要重启才能加载新的 JS 模块代。
+- `engine.test.js`：worktree / preview / merge / sync / SQL / end 全流程；
+- `absorbed.test.js`：主线已包含任务改动时的 end/merge 回归；
+- `sessions.test.js`：DSH 会话记忆读取；
+- `state.test.js`：仓库内状态默认值与 home 状态迁移；
+- `plugin.test.js`：插件安装 skill 包；
+- `cli.test.js`：独立 CLI 端到端；
+- `cli-memory.test.js`：merge 后 `commit-context` 自动带出任务记忆并 `mark-committed`；
+- `install.test.js`：纯 skill 安装。
 
-### 适配新版 DSH
+修改后重新安装：
 
-插件只依赖公开的 Host/Client 服务：
+```bash
+node scripts/install.mjs --force
+```
 
-- Host：`ctx.commands`、`ctx.workingDirectory`、`ctx.subprocess`、`ctx.sessionQuery`
-- Client：`ctx.slots`、`ctx.remote.commands`、`ctx.workspaces`、`ctx.uiWorkspace`
-- slot：`conversation.input.left`（按钮）、`conversation.input.dock`（面板）、`conversation.chat.commandview`（命令结果展开）
-
-升级 DSH 后：
-
-1. 用 `cordis_inspect_query` 的 `Service` / `Slots` 确认方法签名与 slot 仍在；
-2. 更新 `package.json` 的 `engines.dsh` 范围；
-3. 跑 `npm test`，再在 Web 里验证面板与命令；
-4. 如有 API 变化，优先改 `lib/plugin.js`（注入）、`lib/commands.js`（命令）、`client.js`（slot），引擎逻辑不动。
-
-`engines.dsh` 当前为 `>=0.2.1-rc.2 <0.3.0`；不满足时插件管理器会阻止安装/激活。
+如果是插件安装，重启 DSH 让插件重新复制 skill 包；skills 文件本身由 DSH 的文件监听刷新。
 
 ---
 
 ## 已知限制
 
-- 只支持官方 Web / Desktop；没有 TUI 适配。
-- 任务会话的 Git 写操作受沙箱限制，见上文。
-- 默认 `.agents/worktrees` 可能被 `git clean -xfd` 删除；需要时改用 `DSH_WORKTREE_ROOT=git`。
-- 不自动 commit；只有 `/worktree-push-sql` 会 commit + push。
+- 每条命令都会经过一次模型回合；比 host command 慢，也会消耗 token。skill 要求 Agent 原样展示脚本输出，但最终呈现仍由模型完成。
+- 不自动创建/打开 workspace；需要手动 Add workspace。结束任务后也需要手动删除或归档该 workspace。
+- 任务会话记忆依赖 DSH 会话文件格式，格式变化时会退化为“无记忆”，不影响 Git 操作。
+- `--force` 的安全性依赖 skill 指令和 Agent 遵守；不是宿主级硬约束。真正危险的操作前请自己确认。
 - 不启动/重启项目服务；验证需要你手动做。
-- 面板的「打开」会在任务目录注册 workspace，并把 workspace 标题改成任务名；任务多了左边栏会变长。这是当前 v1 的 workspace 模式；后续可加「主 workspace + 切 cwd」模式。
-- Worktrees 按钮在非 Git 仓库会话里也会显示；点开只会提示先打开项目会话。
-- 面板操作会以命令形式记录在会话日志里；这是为了保证操作可审计，不是模型回合。
-- 面板 SQL 操作一次处理该任务当前所有新增 SQL；需要挑选文件时用 `/worktree-take-sql` / `/worktree-push-sql` 命令。
-- Desktop 未在本机实测。
-- 图标/文案为 v1 占位，欢迎替换。
+- 不自动 commit；只有 `/worktree-push-sql` 会 commit + push。
+- 默认状态和 worktree 都在主会话 workspace 内，通常不需要提权；如果设置 `WORKTREE_ROOT=sibling` 或 `WORKTREE_STATE` 到 home，模型 bash 可能被 workspace-write 沙箱拒绝，需要按 DSH 的提权流程用同一命令重试。
+- 只支持官方 Web / Desktop；TUI 未适配。Desktop 未在本机实测。
+- 默认 worktree 仍是 `.agents/worktrees`；只有设置 `WORKTREE_ROOT=sibling` 才会使用 `<repo>.dsh-worktrees`。
 
 ---
-
-## 发布
-
-包名已经是 `dsh-worktree-plugin`（npm 上未被占用）。
-
-- **只推 GitHub**：保持 `package.json` 的 `private: true`，别人用 `github:<用户名>/dsh-worktree-plugin` 安装即可。
-- **发布到 npm**：删除 `private`，补 `repository` / `homepage` / `bugs` 字段，然后：
-
-  ```bash
-  npm publish
-  ```
-
-  发布后安装源直接写 `dsh-worktree-plugin`。
-
-升级 DSH 大版本时，记得同步更新 `engines.dsh` 范围。
 
 ## License
 

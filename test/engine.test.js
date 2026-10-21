@@ -8,6 +8,7 @@ import { createEngine, taskMemory } from '../lib/engine.js'
 const ROOT = path.join(process.env.HOME, '.cache', 'dsh-worktree-test')
 const REPO = path.join(ROOT, `repo-${Date.now()}`)
 const REMOTE = path.join(ROOT, `remote-${Date.now()}.git`)
+const WORKTREE_BASE = path.join(REPO, '.agents', 'worktrees')
 
 function sh(command, args, cwd) {
   return new Promise((resolve, reject) => {
@@ -51,9 +52,13 @@ async function main() {
 
   const created = await engine.newTask({ cwd: REPO, name: '修复登录' })
   const taskPath = created.data.task.worktree
-  assert.ok(taskPath.startsWith(path.join(REPO, '.agents', 'worktrees')))
+  assert.ok(taskPath.startsWith(WORKTREE_BASE))
   assert.equal((await sh('git', ['status', '--porcelain'], REPO)).trim(), '')
   assert.ok((await read(path.join(taskPath, 'README.md'))).includes('base'))
+
+  const inTask = await engine.current({ cwd: taskPath })
+  assert.equal(inTask.data.kind, 'task')
+  assert.equal(inTask.data.taskName, '修复登录')
 
   const listing = await engine.list({ cwd: REPO })
   assert.equal(listing.data.tasks.length, 1)
